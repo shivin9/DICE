@@ -292,7 +292,7 @@ def update_curset_pred_C_and_repD0420(args, model, data_cur, dataloader_cur, var
         embed = encoded_x.data.cpu()
         final_embed[index] = embed
 
-    data_cur.rep = final_embed 
+    data_cur.rep = final_embed
     representations = data_cur.rep
     for i in range(data_cur.rep.size()[0]):
         embed = representations[i,:]

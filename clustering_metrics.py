@@ -37,7 +37,7 @@ import pandas as pd
 import statsmodels.api as sm
 import numpy as np 
 import statsmodels.api as sm
-from sklearn.metrics import auc, roc_auc_score, roc_curve
+from sklearn.metrics import auc, roc_auc_score, roc_curve, average_precision_score
 
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt

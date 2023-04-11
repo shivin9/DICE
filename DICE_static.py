@@ -1,44 +1,47 @@
+# end-to-end code 
 import numpy as np 
 import pickle
 from sklearn.model_selection import train_test_split
 from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
-import scipy.spatial as sp, scipy.cluster.hierarchy as hc
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, OneHotEncoder, label_binarize
 from collections import OrderedDict
+import sys
+
+# import seaborn as sns
+import scipy.spatial as sp, scipy.cluster.hierarchy as hc
 import torch
 from torch.utils.data import *
 from torch.utils.data import Dataset, DataLoader
 from torch.autograd import Variable
-from torch.optim import lr_scheduler
-import torch.optim as optim 
+from torch.optim import lr_scheduler 
+import torch.optim as optim
 
 import torch.nn as nn
 import torch.nn.functional as F
 
 import matplotlib 
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt 
 import argparse
-import os
-import sys
+import os 
 import shutil
 import random
 from sklearn.cluster import AgglomerativeClustering
 import math
+from sklearn.metrics.cluster import silhouette_score
+from scipy.stats import ttest_ind, wasserstein_distance as wd
 
 from sklearn.datasets import load_iris
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, OneHotEncoder, label_binarize
 from sklearn.metrics import log_loss
 from scipy.stats import chi2
 import pandas as pd
-import numpy as np 
-# import statsmodels.api as sm
-from sklearn.metrics.cluster import silhouette_score
-from sklearn.metrics import auc, roc_auc_score, roc_curve, average_precision_score
+from sklearn.metrics import auc, roc_auc_score, average_precision_score, roc_curve
+from sklearn import utils as skutils
 
 DATASETS = ['diabetes', 'ards', 'ards_new', 'ihm', 'cic', 'cic_new', 'sepsis', 'aki', 'aki_new', 'infant', 'wid_mortality',\
             'synthetic', 'titanic', 'magic', 'adult', 'creditcard', 'heart', 'cic_los', 'cic_los_new', 'paper_synthetic',\
-            'ihm_new', 'cic_24', 'ards48', 'aki48', 'sepsis48', 'ards_ts', 'sepsis_ts', 'aki_ts']
+            'ihm_new', 'cic_24', 'ards48', 'aki48', 'sepsis48', 'ards24', 'sepsis24', 'aki24']
 
 DATA_DIR = "/Users/shivin/Document/NUS/Research/Data"
 BASE_DIR = "/Users/shivin/Document/NUS/Research/cac/cac_dl/DICE"
@@ -54,6 +57,10 @@ def enablePrint():
     sys.stdout = sys.__stdout__
 
 
+def is_non_zero_file(fpath):
+    return os.path.isfile(fpath) and os.path.getsize(fpath) > 0
+
+
 def generate_data_loaders(X, y, batch_size):
     X_data_loader = list(zip(X.astype(np.float32), y, range(len(X))))
     data_loader = torch.utils.data.DataLoader(X_data_loader,\
@@ -61,120 +68,201 @@ def generate_data_loaders(X, y, batch_size):
     return data_loader
 
 
-def pad_sents(sents, pad_token, N_FEATS=7, END_T=-1):
-    sents_padded = []
-    max_length = max([len(_) for _ in sents])
-    for i in sents:
-        padded = list(i) + [pad_token]*(max_length-len(i))
-        padded = np.array(np.stack(padded, axis=0), dtype='float')
-        padded = padded[:,:N_FEATS][:END_T]
-        sents_padded.append(padded[:,:N_FEATS][:END_T])
-    return np.array(sents_padded, dtype='float')
+def get_train_val_test_loaders(args, r_state=0, n_features=-1):
+    if args.dataset in DATASETS:
+        IMG_FLAG = 0
+        if args.dataset == "cic_los" or args.dataset == "cic_los_new":
+            if args.dataset == "cic_los":
+                X, y, columns, scale = get_dataset("cic", DATA_DIR, n_features)
+            else:
+                X, y, columns, scale = get_dataset("cic_new", DATA_DIR, n_features)
 
+            los_quantiles = np.quantile(X[:,2], [0, 0.33, 0.66, 1])
+            columns = columns.delete(2)
+            y_los = []
+            for i in range(len(X)):
+                lbl = 0
+                if X[i,2] < los_quantiles[1]:
+                    lbl = 0
+                elif los_quantiles[1] < X[i,2] < los_quantiles[2]:
+                    lbl = 1
+                elif los_quantiles[2] < X[i,2] < los_quantiles[3]:
+                    lbl = 2
+                y_los.append(lbl)
 
-def get_ts_datasets(args, r_state=0):
-    DATASET = args.dataset
-    train_x = np.load(DATA_DIR + '/' + DATASET + '/train.npy', allow_pickle=True)
-    test_x = np.load(DATA_DIR + '/' + DATASET + '/test.npy', allow_pickle=True)
+            X = np.delete(scale.inverse_transform(X), 2, 1) # 2nd column is LOS
+            y = np.array(y_los)
 
-    train_y = np.load(DATA_DIR + '/' + DATASET + '/train_y.npy', allow_pickle=True)
-    test_y = np.load(DATA_DIR + '/' + DATASET + '/test_y.npy', allow_pickle=True)
+        elif args.dataset == "synthetic":
+            n_feat = 90
+            X, y, columns = create_imbalanced_data_clusters(n_samples=10000,\
+                    n_clusters=10, n_features=n_feat,\
+                    inner_class_sep=0.2, outer_class_sep=2, seed=0)
+            args.input_dim = n_feat
+            scale = None
 
-    train_x_len = np.load(DATA_DIR + '/' + DATASET + '/train_x_len.npy', allow_pickle=True)
-    test_x_len = np.load(DATA_DIR + '/' + DATASET + '/test_x_len.npy', allow_pickle=True)
+        elif args.dataset == "paper_synthetic":
+            n_feat = 100
+            X, y = paper_synthetic(2500, centers=args.n_clusters)
+            args.input_dim = n_feat
+            scale = None
+            columns = ["feature_"+str(i) for i in range(n_feat)]
 
-    if DATASET == 'sepsis_ts':
-        X = np.hstack([train_x, test_x])
+        elif args.dataset == "MNIST" or args.dataset == "FashionMNIST" or args.dataset == "CIFAR10":
+            if args.dataset == "MNIST":
+                train_dataset = torchvision.datasets.MNIST(DATA_DIR + '/' + args.dataset, train=True, download=True)
+                test_dataset  = torchvision.datasets.MNIST(DATA_DIR + '/' + args.dataset, train=False, download=True)
+            elif args.dataset == "CIFAR10":
+                train_dataset = torchvision.datasets.CIFAR10(DATA_DIR + '/' + args.dataset, train=True, download=True)
+                test_dataset  = torchvision.datasets.CIFAR10(DATA_DIR + '/' + args.dataset, train=False, download=True)
+            elif args.dataset == "FashionMNIST":
+                train_dataset = torchvision.datasets.FashionMNIST(DATA_DIR + '/' + args.dataset, train=True, download=True)
+                test_dataset  = torchvision.datasets.FashionMNIST(DATA_DIR + '/' + args.dataset, train=False, download=True)
+
+            train_transform = transforms.Compose([
+            transforms.ToTensor(),
+            ])
+
+            test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            ])
+
+            train_dataset.transform = train_transform
+            test_dataset.transform = test_transform
+
+            X_train = np.array([train_dataset[i][0].numpy() for i in range(len(train_dataset))])
+            y_train = np.array([train_dataset[i][1] for i in range(len(train_dataset))])
+            X_test = np.array([test_dataset[i][0].numpy() for i in range(len(test_dataset))])
+            y_test = np.array([test_dataset[i][1] for i in range(len(test_dataset))])
+            IMG_FLAG = 1
+            scale, columns = None, None
+
+        else:
+            X, y, columns, scale = get_dataset(args.dataset, DATA_DIR, n_features)
+
+        if IMG_FLAG == 1:
+            # Here X_test is fixed ... not anymore
+            # N_tr = len(X_train)
+            N_tr = len(X_test)
+            if args.data_ratio == -1:
+                sample_data_size_tr = int(len(X_train))
+            else:
+                sample_data_size_tr = int(args.data_ratio*N_tr)
+            sample_idx = skutils.random.sample_without_replacement(len(X_train), sample_data_size_tr, random_state=r_state)
+            X_train, y_train = X_train[sample_idx], y_train[sample_idx]
+            X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, random_state=r_state, test_size=0.15)
+
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=r_state, test_size=0.15)
+            # N_tr = len(X_train)
+            N_tr = len(X_test)
+            if args.data_ratio == -1:
+                sample_data_size_tr = int(len(X_train))
+            else:
+                sample_data_size_tr = int(args.data_ratio*N_tr)
+            sample_idx = skutils.random.sample_without_replacement(len(X_train), sample_data_size_tr, random_state=r_state)
+            X_train, y_train = X_train[sample_idx], y_train[sample_idx]
+            X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, random_state=r_state, test_size=0.15)        
+
+            args.input_dim = X_train.shape[1]
+
+        return scale, columns, (X_train, y_train), (X_val, y_val), (X_test, y_test)
     else:
-        X = np.vstack([train_x, test_x])
+        return None
 
-    y = np.hstack([train_y, test_y])
-    lens = np.hstack([train_x_len, test_x_len])
-    
-    args.input_dim = train_x[0].shape[1]
 
-    train_x, test_x, train_y, test_y, train_x_len, test_x_len = train_test_split(X, y, lens, random_state=r_state, test_size=0.15)
-
+def get_dataset(DATASET, DATA_DIR, n_features):
     scale = StandardScaler()
-    scale.fit(np.nan_to_num(np.concatenate(train_x)))
+    if DATASET == "cic" or DATASET == "cic_new" or DATASET == "cic_24":
+        Xa = pd.read_csv(DATA_DIR + '/' + DATASET + '/' + "cic_set_a.csv")
+        Xb = pd.read_csv(DATA_DIR + '/' + DATASET + '/' + "cic_set_b.csv")
+        Xc = pd.read_csv(DATA_DIR + '/' + DATASET + '/' + "cic_set_c.csv")
 
-    for idx in range(len(train_x)):
-        train_x[idx] = torch.Tensor(scale.transform(np.nan_to_num(train_x[idx])))
+        ya = Xa['In-hospital_death']
+        yb = Xb['In-hospital_death']
+        yc = Xc['In-hospital_death']
 
-    for idx in range(len(test_x)):
-        test_x[idx] = torch.Tensor(scale.transform(np.nan_to_num(test_x[idx])))
+        Xa = Xa.drop(columns=['recordid', 'Survival', 'In-hospital_death'])
+        Xb = Xb.drop(columns=['recordid', 'Survival', 'In-hospital_death'])
+        Xc = Xc.drop(columns=['recordid', 'Survival', 'In-hospital_death'])
 
-    train_x, dev_x, train_y, dev_y, train_x_len, dev_x_len = train_test_split(train_x, train_y, train_x_len, random_state=r_state, test_size=0.15)
+        cols = Xa.columns
 
-    return (train_x, train_x_len, train_y), (dev_x, dev_x_len, dev_y), (test_x, test_x_len, test_y), scale
+        Xa = Xa.fillna(0)
+        Xb = Xb.fillna(0)
+        Xc = Xc.fillna(0)
 
+        X_train = pd.concat([Xa, Xb])
+        y_train = pd.concat([ya, yb])
 
-def batch_iter(data, batch_size, shuffle=False):
-    """ Yield batches of source and target sentences reverse sorted by length (largest to smallest).
-    @param data (list of (src_sent, tgt_sent)): list of tuples containing source and target sentence
-    @param batch_size (int): batch size
-    @param shuffle (boolean): whether to randomly shuffle the dataset
-    """
-    # x, lens, y = data
-    batch_num = math.ceil(len(data) / batch_size) 
-    index_array = list(range(len(data)))
+        X_test = Xc
+        y_test = yc
 
-    if shuffle:
-        np.random.shuffle(index_array)
+        X = pd.concat([X_train, X_test])
+        y = pd.concat([y_train, y_test]).to_numpy()
+        y = np.array(y, dtype=int)
+        columns = cols
+        X, columns = drop_constant_column(X, columns)
 
-    for i in range(batch_num):
-        indices = index_array[i * batch_size: (i + 1) * batch_size] #  fetch out all the induces
+    elif DATASET == "infant":
+        X = pd.read_csv(DATA_DIR + "/" + DATASET + "/" + "X.csv")
+        columns = X.columns
+        X, columns = drop_constant_column(X, columns)
+
+        y = pd.read_csv(DATA_DIR + "/" + DATASET + "/" + "y.csv").to_numpy()
+        y1 = []
         
-        examples = []
-        for idx in indices:
-            _, samples_idx, samples_C_idx = data[idx]
-            x_idx, lens_idx, y_idx = samples_idx
-            # examples.append((x[idx], y[idx], lens[idx]))
-            examples.append((x_idx, y_idx, lens_idx, samples_C_idx))
-       
-        examples = sorted(examples, key=lambda e: len(e[0]), reverse=True)
-    
-        batch_x = torch.stack([e[0] for e in examples])
-        batch_y = torch.stack([e[1] for e in examples])
-        # batch_name = [e[2] for e in examples]
-        batch_lens = torch.stack([e[2] for e in examples])
-        batch_C = torch.stack([e[3] for e in examples])
-        yield indices, batch_x, batch_y, batch_lens, batch_C
+        for i in range(len(y)):
+            y1.append(y[i][0])
+
+        y = np.array(y1)
+        y = y.astype(int)
+        enc = OneHotEncoder(handle_unknown='ignore')
+        X = enc.fit_transform(X).toarray()
+
+    else:
+        X = pd.read_csv(DATA_DIR + "/" + DATASET + "/" + "X.csv")
+        columns = X.columns
+        X, columns = drop_constant_column(X, columns)
+
+        y = pd.read_csv(DATA_DIR + "/" + DATASET + "/" + "y.csv").to_numpy()
+        y1 = []
+        for i in range(len(y)):
+            y1.append(y[i][0])
+        y = np.array(y1)
+
+    if int(n_features) != -1:
+        n_features = int(n_features)
+        data = np.nan_to_num(X.to_numpy()[:,:n_features])
+        X = scale.fit_transform(data)
+        X = np.nan_to_num(X)
+        columns = columns[:n_features]
+
+    else:
+        data = np.nan_to_num(X.to_numpy())
+        X = scale.fit_transform(data)
+        X = np.nan_to_num(X)
+
+    return X, y, columns, scale
 
 
-def length_to_mask(length, max_len=None, dtype=None):
-    """length: B.
-    return B x max_len.
-    If max_len is None, then max of length will be used.
+def drop_constant_column(df, columns):
     """
-    assert len(length.shape) == 1, 'Length shape should be 1 dimensional.'
-    max_len = max_len or length.max().item()
-    mask = torch.arange(max_len, device=length.device,
-                        dtype=length.dtype).expand(len(length), max_len) < length.unsqueeze(1)
-    if dtype is not None:
-        mask = torch.as_tensor(mask, dtype=dtype, device=length.device)
-    return mask
+    Drops constant value columns of pandas dataframe.
+    """
+    df.dropna(how='all', axis=1, inplace=True)
+    df = df.loc[:, (df != df.iloc[0]).any()]
+    cols = df.columns
+    return df, cols
 
 
-def get_embeddings(model, X, args):
-    batch_size = args.batch_size
-    batch_num = math.ceil(len(X) / batch_size)
-    index_array = list(range(len(X)))
-    z, q = [], []
+def avg(x):
+    if len(x) == 0:
+        return 0
+    else:
+        return np.average(x)
 
-    for i in range(batch_num):
-        indices = index_array[i * batch_size: (i + 1) * batch_size] #  fetch out all the induces
-        
-        examples = []
-        for idx in indices:
-            examples.append(x[idx])
-           
-        batch_x = [e[0] for e in examples]
-        q_batch, z_batch = model(torch.FloatTensor(batch_x).to(args.device), output="latent")
-        z.append(z_batch.detach().numpy())
-        q.append(q_batch.detach().numpy())
-
-    return np.concatenate(z, axis=0), np.concatenate(q, axis=0)
+np.avg = avg
 
 
 def calculate_HTFD(X_train, cluster_ids):
@@ -185,7 +273,7 @@ def calculate_HTFD(X_train, cluster_ids):
     n_clusters = len(torch.unique(cluster_ids))
     input_dim = X_train.shape[1]
     HTFD_scores = {}
-    top_quartile = np.int(n_features/4)
+    top_quartile = int(n_features/4)
     final_score = 0
     for i in range(n_clusters):
         HTFD_scores[i] = {}
@@ -224,7 +312,7 @@ def calculate_WDFD(X, cluster_ids):
     cntr = 0
     n_columns = X.shape[1]
     n_clusters = len(torch.unique(cluster_ids))
-    top_quartile = np.int(n_columns/4)
+    top_quartile = int(n_columns/4)
     col_entrpy = np.zeros(n_columns)
     for i in range(n_clusters):
         for j in range(n_clusters):
@@ -247,33 +335,59 @@ def calculate_WDFD(X, cluster_ids):
     return cluster_entrpy/cntr
 
 
+def multi_class_auc(y_true, y_scores, n_classes):
+    # If n_classes = 2, then label_binarize doesn't give a 2d array
+    y = label_binarize(y_true, classes=list(range(n_classes+1)))[:,:n_classes]
+    scores = []
+    for i in range(n_classes):
+        if len(np.unique(y[:,i])) == 1:
+            auc = 0
+        else:
+            auc = roc_auc_score(y[:,i], y_scores[:,i])
+        scores.append(auc)
+    return np.avg(scores)
+
+
+def multi_class_auprc(y_true, y_scores, n_classes):
+    # If n_classes = 2, then label_binarize doesn't give a 2d array
+    y = label_binarize(y_true, classes=list(range(n_classes+1)))[:,:n_classes]
+    scores = []
+    for i in range(n_classes):
+        if len(np.unique(y[:,i])) == 1:
+            auprc = 0
+        else:
+            auprc = average_precision_score(y[:,i], y_scores[:,i])
+        scores.append(auprc)
+    return np.avg(scores)
+
+
 class yf_dataset_withdemo(Dataset):
-    def __init__(self, dataset, train_test_val, n_z, r_state=0):
+    def __init__(self, dataset, train_test_val, n_z, r_state):
         self.dataset = dataset
         self.data_split = train_test_val
         self.n_z = n_z
-
-        train, val, test, scale = get_ts_datasets(args, r_state)
-        train_x, train_x_len, train_y = train
-        dev_x, dev_x_len, dev_y = val
-        test_x, test_x_len, test_y = test
-        device = args.device
+        
+        scale, columns, train_data, val_data, test_data = get_train_val_test_loaders(args, r_state=r_state, n_features=args.n_features)
+        train_x, train_y = train_data
+        dev_x, dev_y = val_data
+        test_x, test_y = test_data
 
         if self.data_split == 'train':
             data_x = train_x
             data_y = train_y
-            data_lens = train_x_len
+
 
         elif self.data_split == 'test':
             data_x = test_x
             data_y = test_y
-            data_lens = dev_x_len
         
         elif self.data_split == 'val':
             data_x = dev_x
             data_y = dev_y
-            data_lens = test_x_len
 
+        self.data_x = data_x
+        self.data_y = data_y
+        self.data_v = np.zeros(len(data_x))
 
         self.n_samples = len(data_x)
         # init categary parameter, the following need to be initial outside here. 
@@ -283,36 +397,14 @@ class yf_dataset_withdemo(Dataset):
         self.pred_C = torch.LongTensor(np.array([0 for i in range(self.n_samples)])) # the cluster membership. the i-th 
         self.rep = None # [n_samples, n_hidden] the representations of each sample. the i-th element is also corresponding to idx = i.
 
-
-        pad_token = np.ones(args.input_dim)*args.end_t
-        data_x = torch.tensor(pad_sents(data_x, pad_token, args.n_input_fea, args.end_t), dtype=torch.float32).to(device)
-        y_batch = torch.tensor(data_y, dtype=torch.float32).to(device)
-        batch_lens = torch.tensor(data_lens, dtype=torch.float32).to(device).int()
-
-        for i in range(len(batch_lens)):
-            batch_lens[i] = min(batch_lens[i], args.end_t)
-
-        masks = length_to_mask(batch_lens).unsqueeze(-1).float()
-        data_x = torch.nan_to_num(data_x)
-
-        self.data_x = data_x
-        self.data_y = y_batch
-        self.data_v = np.zeros(len(data_x))
-
-        # data_x = torch.FloatTensor(np.array(self.data_x))
-        # data_v = torch.FloatTensor(np.array(self.data_v))
-        # data_y = torch.LongTensor(np.array(self.data_y))
-
         samples_list = []
         for i in range(len(data_x)):
-            totensor_data_x = torch.FloatTensor(np.array(data_x[i]))
+            totensor_data_x = torch.FloatTensor(np.array(self.data_x[i]))
             totensor_data_v = torch.FloatTensor(np.array(self.data_v[i]))
-            totensor_data_y = torch.LongTensor(np.array([data_y[i]]))
+            totensor_data_y = torch.squeeze(torch.LongTensor(np.array([self.data_y[i]])))
             samples_list.append([totensor_data_x, totensor_data_v, totensor_data_y])
-
         self.samples = samples_list
         self.mylength = len(data_x)
-        # self.mylength = 1024
     
     def __len__(self):
         return self.mylength
@@ -322,85 +414,99 @@ class yf_dataset_withdemo(Dataset):
 
 
 class EncoderRNN(nn.Module):
-    def __init__(self, input_size, nhidden, nlayers, dropout, cuda):
+    def __init__(self, input_size, nhidden, nlayers, layers, dropout, cuda):
         super(EncoderRNN, self).__init__()
         self.nhidden = nhidden
         self.feasize = input_size
         self.nlayers = nlayers
         self.dropout = dropout
-        self.cuda = cuda 
-        self.lstm = nn.LSTM(input_size=self.feasize,
-                               hidden_size=self.nhidden,
-                               num_layers=self.nlayers,
-                               dropout=self.dropout,
-                               batch_first=True)
+        self.cuda = cuda
+        self.layers = layers
+
+        self.encoder = OrderedDict()
+        n_layers = int(len(self.layers)/2)
+
+        for i in range(n_layers-1):
+            self.encoder.update(
+                {"layer{}".format(i): nn.Linear(self.layers[i], self.layers[i+1]),
+                'activation{}'.format(i): nn.ReLU(),
+                })
+
+
+        self.encoder = nn.Sequential(self.encoder)
+        self.z_layer = nn.Linear(self.layers[n_layers-1], self.layers[n_layers])
         self.init_weights()
 
     def init_weights(self):
         #nn.init.orthogonal_(self.lstm.weight_ih_l0, gain=np.sqrt(2))
-        for p in self.lstm.parameters():
+        for p in self.encoder.parameters():
             p.data.uniform_(-0.1, 0.1)
 
     def forward(self, x):
-        batch_size = x.size()[0]
-        output, state = self.lstm(x) #output [batch_size, seq_size, hidden_size]
-        hn, cn = state
-        #hidden = hidden_state[-1]  # get hidden state of last layer of encoder
-        output = torch.flip(output, [1])
-        newinput = torch.flip(x,[1])        
-        zeros = torch.zeros(batch_size, 1, x.shape[-1]) #zeros = torch.zeros(batch_size, 1, x.shape[-1])
-        newinput = torch.cat((zeros, newinput),1)
-        newinput = newinput[:, :-1, :]
-        #print("output.size()=",output.size()) # output.size()= torch.Size([1, 10, 100])
-        #print("hn.size()=",hn.size()) # hn.size()= torch.Size([1, 1, 100])
-        #print("hn=",hn)
-        #print("output[0]=",output[0])
-        return output, (hn, cn), newinput
+        enc = self.encoder(x)
+        z = self.z_layer(enc)
+        return z
 
 
 class DecoderRNN(nn.Module):
-    def __init__(self, input_size, nhidden, nlayers, dropout):
+    def __init__(self, input_size, nhidden, nlayers, layers, dropout):
         super(DecoderRNN, self).__init__()
         self.nhidden = nhidden
         self.feasize = input_size
         self.nlayers = nlayers
         self.dropout = dropout
-        self.lstm = nn.LSTM(input_size=self.feasize,
-                               hidden_size=self.nhidden,
-                               num_layers=self.nlayers,
-                               dropout=self.dropout,
-                               batch_first=True)
+        self.decoder = OrderedDict()
+        self.layers = layers
+
+        self.decoder = OrderedDict()
+        n_layers = int(len(self.layers)/2)
+
+        for i in range(n_layers, 2*n_layers-1):
+            self.decoder.update(
+                {"layer{}".format(i): nn.Linear(self.layers[i], self.layers[i+1]),
+                'activation{}'.format(i): nn.ReLU(),
+                })
+
+        self.decoder = nn.Sequential(self.decoder)
+        # self.x_bar_layer = nn.Linear(self.layers[2*n_layers-1], self.layers[2*n_layers])
+
         self.init_weights()
 
     def init_weights(self):
         #nn.init.orthogonal_(self.lstm.weight_ih_l0, gain=np.sqrt(2))
-        for p in self.lstm.parameters():
+        for p in self.decoder.parameters():
             p.data.uniform_(-0.1, 0.1)
 
-    def forward(self, x, h):
-        output, state = self.lstm(x, h)
-        fin = torch.flip(output, [1])
-        return fin
+    def forward(self, z):
+        # decoder
+        dec = self.decoder(z)
+        # x_bar = self.x_bar_layer(dec)
+        return dec
 
 
 class model_2(nn.Module):
-    def __init__(self, input_size, nhidden, nlayers, dropout, n_clusters, n_dummy_demov_fea, para_cuda):
+    def __init__(self, input_size, nhidden, nlayers, dropout, n_clusters, n_dummy_demov_fea, para_cuda, n_classes=2):
         super(model_2, self).__init__()
         self.nhidden = nhidden
         self.input_size = input_size
         self.nlayers = nlayers
         self.dropout = dropout
         self.n_clusters = n_clusters
+        self.n_classes = n_classes
         self.n_dummy_demov_fea = n_dummy_demov_fea
         self.para_cuda = para_cuda
-        self.encoder = EncoderRNN(self.input_size, self.nhidden, self.nlayers, self.dropout, self.para_cuda)
-        self.decoder = DecoderRNN(self.input_size, self.nhidden, self.nlayers, self.dropout)
-        self.linear_decoder_output = nn.Linear(self.nhidden, self.input_size)
-        self.linear_classifier_c = nn.Linear(self.nhidden, self.n_clusters) 
-        self.activateion_classifier = nn.Softmax(dim=1)
-        self.linear_regression_c = nn.Linear(self.n_clusters, 1)
-        self.linear_regression_demov = nn.Linear(self.n_dummy_demov_fea, 1)
+        self.layers = [self.input_size, 128, 64, self.nhidden, 64, 128]
+        self.encoder = EncoderRNN(self.input_size, self.nhidden, self.nlayers, self.layers, self.dropout, self.para_cuda)
+        self.decoder = DecoderRNN(self.input_size, self.nhidden, self.nlayers, self.layers, self.dropout)
 
+        self.linear_decoder_output = nn.Linear(self.layers[-1], self.input_size)
+        self.linear_classifier_c = nn.Linear(self.nhidden, self.n_clusters) 
+        self.activation_classifier = nn.Linear(self.n_clusters, self.n_clusters)
+        self.linear_regression_c = nn.Linear(self.n_clusters, self.n_classes)
+        self.linear_regression_demov = nn.Linear(self.n_dummy_demov_fea, self.n_classes)
+        self.activation_regression = nn.Sigmoid()
+
+        # self.activation_regression = nn.Linear(1, 1)
         expert_layers = [self.nhidden, 128, 64, 32, 16, self.n_clusters]
 
         n_layers = int(len(expert_layers))
@@ -416,13 +522,11 @@ class model_2(nn.Module):
             {"layer{}".format(i): nn.Linear(expert_layers[i], expert_layers[i+1]),
             })
         self.linear_classifier_c = nn.Sequential(classifier)
-        
-        self.activation_regression = nn.Sigmoid()
         self.init_weights()
 
 
     def init_weights(self):
-        #nn.init.orthogonal_(self.linear.weight, gain=np.sqrt(2))
+        # nn.init.orthogonal_(self.linear.weight, gain=np.sqrt(2))
         self.linear_decoder_output.bias.data.fill_(0)
         self.linear_decoder_output.weight.data.uniform_(-0.1,0.1)
         
@@ -438,54 +542,57 @@ class model_2(nn.Module):
 
     def forward(self, x, function, demov = None, mask_BoolTensor = None):
         '''
-        mask = 1, mask one cluster. 
-        mask = 2, mask two cluster. 
-        mask_index: list() of index. 
+        mask = 1, mask one cluster.
+        mask = 2, mask two cluster.
+        mask_index: list() of index.
         '''
         if function =="autoencoder":
-            encoded_x, (hn, cn), newinput = self.encoder(x)
-            decoded_x = self.decoder(newinput, (hn, cn))
+            encoded_x = self.encoder(x)
+            decoded_x = self.decoder(encoded_x)
             decoded_x = self.linear_decoder_output(decoded_x)
             return encoded_x, decoded_x
 
         elif function == "get_representation":
-            encoded_x, (hn, cn), newinput = self.encoder(x)
+            encoded_x = self.encoder(x)
             return encoded_x
 
         elif function == "classifier":
-            encoded_x, (hn, cn), newinput = self.encoder(x)
+            encoded_x = self.encoder(x)
             output = self.linear_classifier_c(encoded_x)
-            output = self.activateion_classifier(output)
+            output = self.activation_classifier(output)
             return encoded_x, output
 
         elif function == "outcome_logistic_regression":
-            encoded_x, (hn, cn), newinput = self.encoder(x)
-            decoded_x = self.decoder(newinput, (hn, cn))
+            encoded_x = self.encoder(x)
+            decoded_x = self.decoder(encoded_x)
             decoded_x = self.linear_decoder_output(decoded_x)
             
-            encoded_x = encoded_x[:,0,:]
+            # encoded_x = encoded_x[:,0,:]
             output_c_no_activate = self.linear_classifier_c(encoded_x)
-            output_c = self.activateion_classifier(output_c_no_activate)
+            output_c = self.activation_classifier(output_c_no_activate)
 
             # output_c dimension [batch_size, n_clusters]
             if mask_BoolTensor!=None:
-                output_c = output_c.masked_fill(mask = mask_BoolTensor, value=torch.tensor(0.0) )
+                # if self.cuda:
+                #     mask_BoolTensor = mask_BoolTensor.cuda()
+                output_c = output_c.masked_fill(mask = mask_BoolTensor, value=torch.tensor(0.0))
             
             output_from_c = self.linear_regression_c(output_c)
             # output_from_v = self.linear_regression_demov(demov)
             # output_cpv = output_from_c + output_from_v
             output_cpv = output_from_c
             output_outcome = self.activation_regression(output_cpv)
-            #print("x.size()=",x.size())
-            #print("encoded_x.size()=",encoded_x.size())
-            #print("decoded_x.size()=",decoded_x.size())
-            #print("output_c_no_activate.size()=",output_c_no_activate.size())
-            #print("output_outcome.size()=",output_outcome.size())
+            # print("x.size()=",x.size())
+            # print("encoded_x.size()=",encoded_x.size())
+            # print("decoded_x.size()=",decoded_x.size())
+            # print("output_c_no_activate.size()=",output_c_no_activate.size())
+            # print("output_outcome.size()=",output_outcome.size())
 
-            #embed = enc.data.cpu()[:,0,:]
+            # embed = enc.data.cpu()[:,0,:]
             return encoded_x, decoded_x, output_c_no_activate, output_outcome
+
         else:
-            print("No corresponding function, check the function you want to for model_2")
+            print(" No corresponding function, check the function you want to for model_2")
             return "Wrong!"          
 
 
@@ -513,9 +620,6 @@ def parse_args():
     parser.add_argument('--filename_test', type=str, required=True,
                         help='location of the data corpus')
 
-    parser.add_argument('--device', type=str, required=True,
-                        help='Device')
-
     parser.add_argument('--n_input_fea', type=int, required=True,
                         help='number of original input feature size')
 
@@ -535,14 +639,14 @@ def parse_args():
     parser.add_argument('--iter', type=int, default=20,
                         help='maximum of iterations in iteration merge clusters')
 
-    parser.add_argument('--end_t', type=int, default=24,
-                        help='Time records')
-
-    parser.add_argument('--batch_size', type=int, default=256,
-                        help='Batch Size')
-
     parser.add_argument('--n_features', type=int, default=-1,
                         help='#Features')
+
+    parser.add_argument('--n_classes', type=int, default=2,
+                        help='#Classes')
+
+    parser.add_argument('--data_ratio', default= 1, type=float,
+                        help='Ratio of train/test dataset')
 
     parser.add_argument('--n_runs', type=int, default=3,
                         help='#Runs')
@@ -560,7 +664,6 @@ def parse_args():
     parser.add_argument('--lambda_classifier', type=float, default=1.0, help='lambda_classifier of classifier in iteration')
     parser.add_argument('--lambda_outcome', type=float, default=1.0, help='lambda of outcome in iteration')
     parser.add_argument('--lambda_p_value', type=float, default=1.0, help='lambda of p value in iteration')
-
 
     args = parser.parse_args()
     print("parameters:")
@@ -615,7 +718,7 @@ def update_M(data_train):
         embed_list = torch.stack(dict_c_embedding[c_key])
         embed_mean_dim0 = embed_list.mean(dim=0)
         data_train.M[:,c_key] = embed_mean_dim0 
-    print("    update M!")
+    # print("    update M!")
 
 
 def test_AE(args, model, dataloader_test):
@@ -642,14 +745,13 @@ def test_AE(args, model, dataloader_test):
 
 
 def update_testset_R_C_M_K(args, model, data_test, dataloader_test, data_train):
-    print("-----------------")
-    print("    update_testset_R_C_M_K")
+    # print("-----------------")
+    # print("    update_testset_R_C_M_K")
     # update date_test.rep
     final_embed = torch.randn(len(data_test), args.n_hidden_fea, dtype=torch.float)
     model.eval()
-    counter_idx = 0
-    for batch_idx, (idx_batch, x_batch, y_batch, batch_lens, batch_C) in enumerate(batch_iter(data_test, args.batch_size)):
-        data_x, data_v, target = x_batch, batch_lens, y_batch
+    for batch_idx, (index, batch_xvy, batch_c) in enumerate(dataloader_test):
+        data_x, data_v, target = batch_xvy
         data_x = torch.autograd.Variable(data_x)
         data_v = torch.autograd.Variable(data_v)
         target = torch.autograd.Variable(target)
@@ -661,18 +763,17 @@ def update_testset_R_C_M_K(args, model, data_test, dataloader_test, data_train):
 
         enc, pred = model(data_x, "autoencoder")
     
-        embed = enc.data.cpu()[:,0,:]
-        for j in range(min(args.batch_size, len(embed))):
-            final_embed[counter_idx] = embed[j]
-            counter_idx += 1
+        # embed = enc.data.cpu()[:,]
+        embed = enc.data.cpu()
+        final_embed[index] = embed
 
     data_test.rep = final_embed 
-    print("        update data_test R!")
+    # print("        update data_test R!")
 
     data_test.n_cat = data_train.n_cat
-    print("        update data_test n_cat")
+    # print("        update data_test n_cat")
     data_test.M = data_train.M
-    print("        update data_test M")
+    # print("        update data_test M")
     # update date_test.C
     representations = data_test.rep
     for i in range(representations.size()[0]):
@@ -686,7 +787,7 @@ def update_testset_R_C_M_K(args, model, data_test, dataloader_test, data_train):
 
 def p_value_calculate(X, y, is_intercept, X_null=None):
     # with null variable
-    print("X.shape={}, y.shape={}".format(X.shape, y.shape))
+    # print("X.shape={}, y.shape={}".format(X.shape, y.shape))
 
     lr_model = LogisticRegression(C=1e8,solver='lbfgs', max_iter=1000)
     lr_model.fit(X, y)
@@ -707,6 +808,7 @@ def p_value_calculate(X, y, is_intercept, X_null=None):
         p_value = chi2.sf(G, df)
     else: 
         # without null variable
+        print(X_null.shape, X_null)
         lr_model.fit(X_null, y)
         null_prob = lr_model.predict_proba(X_null)[:,1]
         null_log_likelihood = -log_loss(y,
@@ -760,10 +862,12 @@ def analysis_p_value_related(data_train, num_clusters, if_check):
     print("dict_outcome_ratio=",dict_outcome_ratio)
     
     var_c = np.array(list_onehot)
-    var_v = np.array(data_v)
+    var_v = np.zeros(var_c.shape)
+    # var_v = np.array(data_v)
     depend_y = np.array(data_y) 
 
-    var_cpv = np.concatenate((var_c, var_v), axis=1)
+    # var_cpv = np.concatenate((var_c, var_v), axis=1)
+    var_cpv = var_c
     if if_check:
         print("var_c.shape={}, var_v.shape={}, depend_y.shape={}".format(var_c.shape, var_v.shape, depend_y.shape))
         print("var_cpv.shape={}".format(var_cpv.shape))
@@ -872,7 +976,8 @@ def analysis_p_value_related_onlyc(data_train, num_clusters, if_check):
 def func_analysis_test_error_D0406(args, model, data_test, dataloader_test):
     model.eval()
     criterion_MSE = nn.MSELoss()
-    criterion_BCE = nn.BCELoss()
+    # criterion_BCE = nn.BCELoss()
+    criterion_BCE = nn.CrossEntropyLoss(reduction='mean')
     error_AE = []
     error_outcome_likelihood = []
     correct = 0 
@@ -882,10 +987,8 @@ def func_analysis_test_error_D0406(args, model, data_test, dataloader_test):
     outcome_true_y = []
     outcome_pred_prob = [] 
     print("-----------------")
-
-    for batch_idx, (idx_batch, x_batch, y_batch, batch_lens, batch_c) in enumerate(batch_iter(data_test, args.batch_size)):
-
-        data_x, data_v, target = x_batch, batch_lens, y_batch
+    for batch_idx, (index, batch_xvy, batch_c) in enumerate(dataloader_test):
+        data_x, data_v, target = batch_xvy
         data_x = torch.autograd.Variable(data_x)
         data_v = torch.autograd.Variable(data_v)
         target = torch.autograd.Variable(target)
@@ -895,18 +998,18 @@ def func_analysis_test_error_D0406(args, model, data_test, dataloader_test):
             data_x = data_x.cuda()
             data_v = data_v.cuda()
             target = target.cuda()
+            batch_c = batch_c.cuda()
 
-        
         # x, function, demov, mask_BoolTensor
         encoded_x, decoded_x, output_c_no_activate, output_outcome = model(x=data_x, function="outcome_logistic_regression", demov=data_v)
         
         loss_AE = criterion_MSE(data_x, decoded_x)
-        loss_outcome = criterion_BCE(output_outcome, target.float())
+        loss_outcome = criterion_BCE(output_outcome, target)
         error_outcome_likelihood.append(loss_outcome.data.cpu().numpy())
         error_AE.append(loss_AE.data.cpu().numpy())
 
         # test datatest.C. 
-        # #print("output_c_no_activate =", output_c_no_activate)
+        # print("output_c_no_activate =", output_c_no_activate)
         # print()
         # print("output_c_no_activate.data=",output_c_no_activate.data.cpu())
         _, predicted = torch.max(output_c_no_activate.data, 1)
@@ -916,16 +1019,18 @@ def func_analysis_test_error_D0406(args, model, data_test, dataloader_test):
         outcome_true_y.append(target.data.cpu())
         outcome_pred_prob.append(output_outcome.data.cpu()) 
 
-        data_test.pred_C[idx_batch] = predicted.cpu()
-        
+        data_test.pred_C[index] = predicted.cpu()
+    
     test_classifier_c_accuracy = correct/total 
     test_AE_loss = np.mean(error_AE)
     test_outcome_likelihood = np.mean(error_outcome_likelihood)
 
-    #false_positive_rate, true_positive_rate, thresholds = metrics.roc_curve(outcome_true_y, outcome_pred_prob)
-    #auc_score = metrics.auc(false_positive_rate, true_positive_rate)
-    outcome_auc_score = roc_auc_score(np.concatenate(outcome_true_y, 0), np.concatenate(outcome_pred_prob, 0))
-    outcome_auprc_score = average_precision_score(np.concatenate(outcome_true_y, 0), np.concatenate(outcome_pred_prob, 0))
+    # false_positive_rate, true_positive_rate, thresholds = metrics.roc_curve(outcome_true_y, outcome_pred_prob)
+    # auc_score = metrics.auc(false_positive_rate, true_positive_rate)
+    outcome_true_y = np.concatenate(outcome_true_y, 0)
+    outcome_pred_prob = np.concatenate(outcome_pred_prob, 0)
+    outcome_auc_score = multi_class_auc(outcome_true_y, outcome_pred_prob, args.n_classes)
+    outcome_auprc_score = multi_class_auprc(outcome_true_y, outcome_pred_prob, args.n_classes)
     return test_AE_loss, test_classifier_c_accuracy, test_outcome_likelihood, outcome_auc_score, outcome_auprc_score
 
 
@@ -952,12 +1057,12 @@ def change_label_from_highratio_to_lowratio(args, oldlabel, data_train):
     dict_outcome_ratio = {}
     for keyc in dict_c_count:
         dict_outcome_ratio[keyc] = dict_outcome_in_c_count[keyc]/dict_c_count[keyc]
-    print(" before change dict_outcome_ratio=",dict_outcome_ratio)
+    # print(" before change dict_outcome_ratio=",dict_outcome_ratio)
     
     sorted_dict_outcome_ratio = dict(sorted(dict_outcome_ratio.items(), key=lambda x:x[1], reverse=True))
     order = list(sorted_dict_outcome_ratio.keys())
     order_c_map = {}
-    print("sorted_dict_outcome_ratio=",sorted_dict_outcome_ratio)
+    # print("sorted_dict_outcome_ratio=",sorted_dict_outcome_ratio)
     for i in range(len(order)):
         order_c_map[order[i]] = i
     print(order_c_map)
@@ -983,18 +1088,18 @@ def main(args):
 
     for r in range(len(iter_array)):
         # load data
-        data_train = yf_dataset_withdemo(args.input_path, 'train', args.n_hidden_fea, r_state=r)
-        dataloader_train = torch.utils.data.DataLoader(data_train, batch_size=256, shuffle=True, drop_last=True)
-        data_test = yf_dataset_withdemo(args.input_path, 'test', args.n_hidden_fea, r_state=r)
-        dataloader_test = torch.utils.data.DataLoader(data_test, batch_size=256, shuffle=False, drop_last=True)
+        data_train = yf_dataset_withdemo(args.dataset, 'train', args.n_hidden_fea, r_state=r)
+        dataloader_train = torch.utils.data.DataLoader(data_train, batch_size=128, shuffle=True, drop_last=True)
+
+        data_test = yf_dataset_withdemo(args.dataset, 'test', args.n_hidden_fea, r_state=r)
+        dataloader_test = torch.utils.data.DataLoader(data_test, batch_size=128, shuffle=False, drop_last=True)
 
         # Algorithm 2 model
-        print("n_input_fea", args.n_input_fea)
-        model = model_2(args.n_input_fea, args.n_hidden_fea, args.lstm_layer, args.lstm_dropout, args.K_clusters, args.n_dummy_demov_fea, args.cuda)
+        model = model_2(args.n_input_fea, args.n_hidden_fea, args.lstm_layer, args.lstm_dropout, args.K_clusters, args.n_dummy_demov_fea, 0)
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
         criterion_MSE = nn.MSELoss()
-        criterion_BCE = nn.BCELoss()
-        criterion_CrossEntropy = nn.CrossEntropyLoss()
+        criterion_BCE = nn.CrossEntropyLoss(reduction='mean')
+        criterion_CrossEntropy = nn.CrossEntropyLoss(reduction='mean')
 
         print(model)
         if args.cuda:
@@ -1004,69 +1109,64 @@ def main(args):
         print("/////////////////////////////////////////////////////////////////////////////")
         print("part 1: train AE and for representation initialization")
 
-        args.output_path = "./hn_"+str(args.n_hidden_fea)+"_K_"+str(args.K_clusters)
-        if os.path.isdir(args.output_path):
-            shutil.rmtree(args.output_path)
-        os.makedirs(args.output_path)
-
+        args.output_path = BASE_DIR + "/" + args.dataset + "/hn_"+str(args.n_hidden_fea)+"_K_"+str(args.K_clusters)
         part1_foldername = args.output_path + "/part1_AE_nhidden_"+str(args.n_hidden_fea)
-        if os.path.isdir(part1_foldername):
-            shutil.rmtree(part1_foldername)
-        os.makedirs(part1_foldername)
-
         loss_list = []
         train_AE_loss_list = []
         test_AE_loss_list = []
         number_reassign_list = []
         random_state_list = []
+        
+        if not is_non_zero_file(part1_foldername+'/AE_model.pt'):
+            if not os.path.isdir(args.output_path):
+                os.makedirs(args.output_path)
 
-        for epoch in range(args.init_AE_epoch):
-            error = []
-            print("-----------------")
-            model.train()
-            # for batch_idx, (index, batch_xvy, batch_c) in enumerate(dataloader_train):
-            for batch_idx, (idx_batch, x_batch, y_batch, batch_lens, batch_c) in enumerate(batch_iter(data_train, args.batch_size)):
-                data_x, data_v, target = x_batch, batch_lens, y_batch
+            if not os.path.isdir(part1_foldername):
+                os.makedirs(part1_foldername)
 
-                data_x = torch.autograd.Variable(data_x)
-                data_v = torch.autograd.Variable(data_v)
-                target = torch.autograd.Variable(target)
-                batch_c = torch.autograd.Variable(batch_c)
+            for epoch in range(args.init_AE_epoch):
+                error = []
+                print("-----------------")
+                model.train()
+                for batch_idx, (index, batch_xvy, batch_c) in enumerate(dataloader_train):
+                    data_x, data_v, target = batch_xvy
+                    data_x = torch.autograd.Variable(data_x)
+                    data_v = torch.autograd.Variable(data_v)
+                    target = torch.autograd.Variable(target)
 
-                if args.cuda:
-                    data_x = data_x.cuda()
-                    data_v = data_v.cuda()
-                    target = target.cuda()
-                    batch_c = batch_c.cuda()
+                    if args.cuda:
+                        data_x = data_x.cuda()
+                        data_v = data_v.cuda()
+                        target = target.cuda()
 
-                enc, pred = model(data_x, "autoencoder")
+                    enc, pred = model(data_x, "autoencoder")
 
-                optimizer.zero_grad()
-                loss = criterion_MSE(data_x, pred)
-                loss.backward()
-                optimizer.step()
-                error.append(loss.data.cpu().numpy())
-            loss_list.append(np.mean(error))
+                    optimizer.zero_grad()
+                    loss = criterion_MSE(data_x, pred)
+                    loss.backward()
+                    optimizer.step()
+                    error.append(loss.data.cpu().numpy())
+                loss_list.append(np.mean(error))
 
-            train_AE_loss = np.mean(error)
-            test_AE_loss = test_AE(args, model, dataloader_test)
-            print("Epoch: %s, train AE loss: %s, test AE loss: %s."%(epoch, train_AE_loss, test_AE_loss))   
+                train_AE_loss = np.mean(error)
+                test_AE_loss = test_AE(args, model, dataloader_test)
+                print("Epoch: %s, train AE loss: %s, test AE loss: %s."%(epoch, train_AE_loss, test_AE_loss))
 
-            train_AE_loss_list.append(train_AE_loss)
-            test_AE_loss_list.append(test_AE_loss)
+                train_AE_loss_list.append(train_AE_loss)
+                test_AE_loss_list.append(test_AE_loss)
 
-            torch.save(model.state_dict(), part1_foldername+'/AE_model_'+ str(epoch) +'.pt')
-            print("    Saving AE models")
+                torch.save(model.state_dict(), part1_foldername+'/AE_model.pt')
+                print("    Saving AE models")
 
-        plt.plot(train_AE_loss_list, color='g')
-        plt.plot(test_AE_loss_list, color='b')
-        plt.legend(["train_AE_loss","test_AE_loss_list"])
-        plt.savefig(part1_foldername+"/part1_loss_AE.png")
-        plt.close()
+        else:
+            # load pretrain weights
+            model.load_state_dict(torch.load(part1_foldername+'/AE_model.pt'))
+            print('load pretrained ae from', args.output_path)
 
         print("part 1, initial done!")
         print("////////////////////////////////////////////////////////////////////////////////////")
         print("part 2, start optimizaiton the main loss")
+
         part2_foldername = args.output_path + "/part2_AE_nhidden_"+str(args.n_hidden_fea)
         if os.path.isdir(part2_foldername):
             shutil.rmtree(part2_foldername)
@@ -1095,27 +1195,20 @@ def main(args):
             # part 2, clustering.
             final_embed = torch.randn(len(data_train), args.n_hidden_fea, dtype=torch.float)
             model.eval()
-            counter_idx = 0
-
-            for batch_idx, (idx_batch, x_batch, y_batch, batch_lens, batch_c) in enumerate(batch_iter(data_train, args.batch_size)):
-                data_x, data_v, target = x_batch, batch_lens, y_batch
+            for batch_idx, (index, batch_xvy, batch_c) in enumerate(dataloader_train):
+                data_x, data_v, target = batch_xvy
                 data_x = torch.autograd.Variable(data_x)
                 data_v = torch.autograd.Variable(data_v)
                 target = torch.autograd.Variable(target)
-                batch_c = torch.autograd.Variable(batch_c)
 
                 if args.cuda:
                     data_x = data_x.cuda()
                     data_v = data_v.cuda()
                     target = target.cuda()
-                    batch_c = batch_c.cuda()
 
                 enc, pred = model(data_x, "autoencoder")
-                embed = enc.data.cpu()[:,0,:]
-                # print(final_embed[batch_idx].shape, embed.shape, data_x.shape)
-                for j in range(min(args.batch_size, len(embed))):
-                    final_embed[counter_idx] = embed[j]
-                    counter_idx += 1
+                embed = enc.data.cpu()
+                final_embed[index]=embed
 
             #final_embed = np.vstack(embedding_list)
             final_embed = final_embed.numpy()
@@ -1133,18 +1226,18 @@ def main(args):
             # oldlabel = clustering.labels_
             oldlabel = kmeans.labels_
             new_labels, order_c_map = change_label_from_highratio_to_lowratio(args, oldlabel, data_train)
-            number_reassign = len(data_train)-(torch.LongTensor(new_labels) == data_train.C[:len(data_train)]).sum().item()
+            number_reassign = len(data_train)-(torch.LongTensor(new_labels) == data_train.C).sum().item()
             print("number_reassign=",number_reassign)
             number_reassign_list.append(number_reassign)
             data_train.C = torch.LongTensor(new_labels)
 
             data_train.n_cat = args.K_clusters 
             data_train.M = torch.FloatTensor(args.n_hidden_fea, args.K_clusters)
-            print("***************************************")
-            print("data_train.M[0,:]=",data_train.M[0,:])
-            update_M(data_train)
-
+            # print("***************************************")
             # print("data_train.M[0,:]=",data_train.M[0,:])
+            update_M(data_train)
+            # print("data_train.M[0,:]=",data_train.M[0,:])
+
             # print("    data_train.M.shape=", data_train.M.shape)
             # print("    data_train.C.shape=", data_train.C.shape)
             # print("    data_train.rep.shape=", data_train.rep.shape)
@@ -1194,9 +1287,8 @@ def main(args):
                 outcome_pred_prob = [] 
                 print("-----------------")
                 model.train()
-
-                for batch_idx, (idx_batch, x_batch, y_batch, batch_lens, batch_c) in enumerate(batch_iter(data_train, args.batch_size)):
-                    data_x, data_v, target = x_batch, batch_lens, y_batch
+                for batch_idx, (index, batch_xvy, batch_c) in enumerate(dataloader_train):
+                    data_x, data_v, target = batch_xvy
                     data_x = torch.autograd.Variable(data_x)
                     data_v = torch.autograd.Variable(data_v)
                     target = torch.autograd.Variable(target)
@@ -1235,14 +1327,15 @@ def main(args):
                                             model(x=data_x, function="outcome_logistic_regression", demov=data_v, mask_BoolTensor=mask_k1_tensor)
                     encoded_x_mask_k1k2, decoded_x_mask_k1k2, output_c_no_activate_mask_k1k2, output_outcome_mask_k1k2 = \
                                             model(x=data_x, function="outcome_logistic_regression", demov=data_v, mask_BoolTensor=mask_k1k2_tensor)
+
                     ###############################
 
                     optimizer.zero_grad()
                     loss_classifier = criterion_CrossEntropy(output_c_no_activate, batch_c)
                     loss_AE = criterion_MSE(data_x, decoded_x)
-                    loss_outcome = criterion_BCE(output_outcome, target.float())
-                    loss_outcome_mask_k1 = criterion_BCE(output_outcome_mask_k1, target.float())
-                    loss_outcome_mask_k1k2 = criterion_BCE(output_outcome_mask_k1k2, target.float())
+                    loss_outcome = criterion_BCE(output_outcome, target)
+                    loss_outcome_mask_k1 = criterion_BCE(output_outcome_mask_k1, target)
+                    loss_outcome_mask_k1k2 = criterion_BCE(output_outcome_mask_k1k2, target)
                     loss_G = 2*(loss_outcome_mask_k1k2 - loss_outcome_mask_k1)
                     loss_p_value = 3.841 - loss_G #  we want loss_p_value < 0 as much as possible. 
 
@@ -1260,18 +1353,20 @@ def main(args):
                     error_outcome_likelihood.append(loss_outcome.data.cpu().numpy())
                     
                     _, predicted = torch.max(output_c_no_activate.data, 1)
-                    data_train.pred_C[idx_batch] = predicted.cpu()
+                    data_train.pred_C[index] = predicted.cpu()
                     total += batch_c.size(0)
                     correct += (predicted == batch_c).sum().item()
 
                     outcome_true_y.append(target.data.cpu())
                     outcome_pred_prob.append(output_outcome.data.cpu())
-            
-                train_outcome_auc_score = roc_auc_score(np.concatenate(outcome_true_y,0), np.concatenate(outcome_pred_prob,0))
-                train_outcome_auprc_score = average_precision_score(np.concatenate(outcome_true_y,0), np.concatenate(outcome_pred_prob,0))
+
+                outcome_true_y = np.squeeze(np.concatenate(outcome_true_y, 0))
+                outcome_pred_prob = np.squeeze(np.concatenate(outcome_pred_prob, 0))
+
+                train_outcome_auc_score = multi_class_auc(outcome_true_y, outcome_pred_prob, args.n_classes)
+                train_outcome_auprc_score = multi_class_auprc(outcome_true_y, outcome_pred_prob, args.n_classes)
                 print("total=", total)
                 classifier_c_accuracy = correct/total
-
 
                 
                 train_AE_loss = np.mean(error_AE)
@@ -1307,13 +1402,11 @@ def main(args):
                 iter_test_auc_list.append(test_outcome_auc_score)
                 iter_test_auprc_list.append(test_outcome_auprc_score)
 
-                # print("epoch {:2d}: train AE loss= {:.4f}, c acc= {:.4f}, outcome nll= {:.4f}, outcome_auc_score= {:.4f}, classifier loss= {:.4f}, outcome loss= {:.4f}, p_value loss= {:.4f},".format(epoch, train_AE_loss, classifier_c_accuracy, train_outcome_likeilhood, train_outcome_auc_score, train_classifier_loss, train_outcome_loss, train_p_value_loss))
-                # print("        : test  AE loss= {:.4f}, c acc= {:.4f}, outcome nll= {:.4f}, outcome_auc_score= {:.4f}".format(test_AE_loss, test_classifier_c_accuracy, test_outcome_likelihood, test_outcome_auc_score))
 
+                # # check p-value
+                # # first use data_train.C to calculate p-value, then use the predict c to calculate. (From classification, we can clearly see the accuracy is very high, so I think equal)
+                # # prepare the variable for regression. Bring data_x, data_v, data_y, data_train.C. (the order is the same in dataset).
 
-                # check p-value
-                # first use data_train.C to calculate p-value, then use the preict c to calculate. (From classification, we can clearly see the accuracy is very high, so I think equal)
-                # prepare the variable for regression. Bring data_x, data_v, data_y, data_train.C. (the order is the same in dataset).
                 # dict_outcome_ratio, dict_p_value = analysis_p_value_related(data_train, args.K_clusters, 1) 
                 # dict_p_value_list = list(dict_p_value.values())
                 # flag_morethan_0p05 = 0 
@@ -1359,14 +1452,11 @@ def main(args):
         #     outcome_auprc_score= {:.4e}".format(test_AE_loss, test_classifier_c_accuracy, test_outcome_likelihood,\
         #     test_outcome_auc_score, test_outcome_auprc_score))
 
-        encoded_x, decoded_x = model(x=torch.Tensor(np.array(data_train.data_x)), function="autoencoder", demov=data_v)
-        encoded_x = encoded_x[:, -1, :]
-        tmp_sil  = silhouette_score(encoded_x.detach().numpy(), data_train.pred_C)
-        # tmp_htfd = calculate_HTFD(data_train.data_x, data_train.pred_C)
-        # tmp_wdfd = calculate_WDFD(data_train.data_x, data_train.pred_C)
+        encoded_x, decoded_x = model(x=torch.Tensor(data_train.data_x), function="autoencoder", demov=data_v)
 
-        tmp_htfd = 0
-        tmp_wdfd = 0
+        tmp_sil  = silhouette_score(encoded_x.detach().numpy(), data_train.pred_C)
+        tmp_htfd = calculate_HTFD(data_train.data_x, data_train.pred_C)
+        tmp_wdfd = calculate_WDFD(data_train.data_x, data_train.pred_C)
 
         sil_scores.append(tmp_sil)
         htfd_scores.append(tmp_htfd)
@@ -1386,7 +1476,7 @@ def main(args):
         0, np.std(auc_scores), np.std(auprc_scores), 0,\
         np.std(sil_scores), np.std(htfd_scores), np.std(wdfd_scores)))
 
-    
+
 
 if __name__ == '__main__':
     blockPrint()
