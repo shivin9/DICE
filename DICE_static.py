@@ -500,13 +500,13 @@ class model_2(nn.Module):
         self.decoder = DecoderRNN(self.input_size, self.nhidden, self.nlayers, self.layers, self.dropout)
 
         self.linear_decoder_output = nn.Linear(self.layers[-1], self.input_size)
-        self.linear_classifier_c = nn.Linear(self.nhidden, self.n_clusters) 
+        # self.linear_classifier_c = nn.Linear(self.nhidden, self.n_clusters) 
         self.activation_classifier = nn.Linear(self.n_clusters, self.n_clusters)
         self.linear_regression_c = nn.Linear(self.n_clusters, self.n_classes)
         self.linear_regression_demov = nn.Linear(self.n_dummy_demov_fea, self.n_classes)
-        self.activation_regression = nn.Sigmoid()
+        # self.activation_regression = nn.Sigmoid()
+        self.activation_regression = nn.Linear(self.n_classes, self.n_classes)
 
-        # self.activation_regression = nn.Linear(1, 1)
         expert_layers = [self.nhidden, 128, 64, 32, 16, self.n_clusters]
 
         n_layers = int(len(expert_layers))
@@ -1012,6 +1012,7 @@ def func_analysis_test_error_D0406(args, model, data_test, dataloader_test):
         # print("output_c_no_activate =", output_c_no_activate)
         # print()
         # print("output_c_no_activate.data=",output_c_no_activate.data.cpu())
+
         _, predicted = torch.max(output_c_no_activate.data, 1)
         correct += (predicted == batch_c).sum().item()
         total += batch_c.size(0)
@@ -1105,7 +1106,7 @@ def main(args):
         if args.cuda:
             model = model.cuda()
 
-        # Autoencoder, initalize the representation 
+        # Autoencoder, initalize the representation
         print("/////////////////////////////////////////////////////////////////////////////")
         print("part 1: train AE and for representation initialization")
 
@@ -1365,7 +1366,6 @@ def main(args):
 
                 train_outcome_auc_score = multi_class_auc(outcome_true_y, outcome_pred_prob, args.n_classes)
                 train_outcome_auprc_score = multi_class_auprc(outcome_true_y, outcome_pred_prob, args.n_classes)
-                print("total=", total)
                 classifier_c_accuracy = correct/total
 
                 
@@ -1387,7 +1387,6 @@ def main(args):
 
                 test_AE_loss, test_classifier_c_accuracy, test_outcome_likelihood,\
                 test_outcome_auc_score, test_outcome_auprc_score = func_analysis_test_error_D0406(args, model, data_test, dataloader_test)
-
 
                 iter_train_negloglikeli_list.append(train_outcome_likeilhood)
                 iter_test_negloglikeli_list.append(test_outcome_likelihood)
@@ -1445,6 +1444,7 @@ def main(args):
         #     outcome_auprc_score= {:.4e}, classifier loss= {:.4e}, outcome loss= {:.4e}, p_value loss= {:.4e},".format\
         #     (epoch, train_AE_loss, classifier_c_accuracy, train_outcome_likeilhood, train_outcome_auc_score,\
         #     train_outcome_auprc_score, train_classifier_loss, train_outcome_loss, train_p_value_loss))
+
         auc_scores.append(np.mean(iter_test_auc_list))
         auprc_scores.append(np.mean(iter_test_auprc_list))
 
@@ -1453,7 +1453,6 @@ def main(args):
         #     test_outcome_auc_score, test_outcome_auprc_score))
 
         encoded_x, decoded_x = model(x=torch.Tensor(data_train.data_x), function="autoencoder", demov=data_v)
-
         tmp_sil  = silhouette_score(encoded_x.detach().numpy(), data_train.pred_C)
         tmp_htfd = calculate_HTFD(data_train.data_x, data_train.pred_C)
         tmp_wdfd = calculate_WDFD(data_train.data_x, data_train.pred_C)
@@ -1461,7 +1460,6 @@ def main(args):
         sil_scores.append(tmp_sil)
         htfd_scores.append(tmp_htfd)
         wdfd_scores.append(tmp_wdfd)
-
 
     enablePrint()
 
