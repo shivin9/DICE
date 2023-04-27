@@ -387,7 +387,8 @@ class yf_dataset_withdemo(Dataset):
 
         self.data_x = data_x
         self.data_y = data_y
-        self.data_v = np.zeros(len(data_x))
+        # self.data_v = np.zeros(len(data_x))
+        self.data_v = data_x
 
         self.n_samples = len(data_x)
         # init categary parameter, the following need to be initial outside here. 
@@ -501,14 +502,14 @@ class model_2(nn.Module):
 
         self.linear_decoder_output = nn.Linear(self.layers[-1], self.input_size)
         # self.linear_classifier_c = nn.Linear(self.nhidden, self.n_clusters) 
-        self.activation_classifier = nn.Linear(self.n_clusters, self.n_clusters)
+        # self.activation_classifier = nn.Linear(self.n_clusters, self.n_clusters)
+        self.activation_classifier = nn.Softmax(dim=1)
         self.linear_regression_c = nn.Linear(self.n_clusters, self.n_classes)
         self.linear_regression_demov = nn.Linear(self.n_dummy_demov_fea, self.n_classes)
         # self.activation_regression = nn.Sigmoid()
         self.activation_regression = nn.Linear(self.n_classes, self.n_classes)
 
         expert_layers = [self.nhidden, 128, 64, 32, 16, self.n_clusters]
-
         n_layers = int(len(expert_layers))
         classifier = OrderedDict()
         for i in range(n_layers-2):
@@ -522,6 +523,21 @@ class model_2(nn.Module):
             {"layer{}".format(i): nn.Linear(expert_layers[i], expert_layers[i+1]),
             })
         self.linear_classifier_c = nn.Sequential(classifier)
+
+        expert_layers = [self.n_dummy_demov_fea + self.n_clusters, 128, 64, 32, 16, self.n_classes]
+        n_layers = int(len(expert_layers))
+        classifier1 = OrderedDict()
+        for i in range(n_layers-2):
+            classifier1.update(
+                {"layer{}".format(i): nn.Linear(expert_layers[i], expert_layers[i+1]),
+                'activation{}'.format(i): nn.ReLU(),
+                })
+
+        i = n_layers - 2
+        classifier1.update(
+            {"layer{}".format(i): nn.Linear(expert_layers[i], expert_layers[i+1]),
+            })
+        self.final_classifier = nn.Sequential(classifier1)
         self.init_weights()
 
 
@@ -576,11 +592,15 @@ class model_2(nn.Module):
                 # if self.cuda:
                 #     mask_BoolTensor = mask_BoolTensor.cuda()
                 output_c = output_c.masked_fill(mask = mask_BoolTensor, value=torch.tensor(0.0))
-            
+
+            # final_cluster_demov = torch.hstack((output_c, demov))
+            # output_outcome = self.final_classifier(final_cluster_demov)
+            # print(final_cluster_demov.shape)
+
             output_from_c = self.linear_regression_c(output_c)
-            # output_from_v = self.linear_regression_demov(demov)
-            # output_cpv = output_from_c + output_from_v
-            output_cpv = output_from_c
+            output_from_v = self.linear_regression_demov(demov)
+            output_cpv = output_from_c + output_from_v
+            # output_cpv = output_from_c
             output_outcome = self.activation_regression(output_cpv)
             # print("x.size()=",x.size())
             # print("encoded_x.size()=",encoded_x.size())
@@ -593,7 +613,7 @@ class model_2(nn.Module):
 
         else:
             print(" No corresponding function, check the function you want to for model_2")
-            return "Wrong!"          
+            return "Wrong!"
 
 
 def parse_args():
@@ -1086,6 +1106,7 @@ def main(args):
     iter_array = range(args.n_runs)
     f1_scores, auc_scores, auprc_scores, acc_scores, minpse_scores = [], [], [], [], []
     sil_scores, wdfd_scores, htfd_scores = [], [], []
+    args.n_dummy_demov_fea = args.n_input_fea
 
     for r in range(len(iter_array)):
         # load data
@@ -1244,7 +1265,6 @@ def main(args):
             # print("    data_train.rep.shape=", data_train.rep.shape)
             # print("4. init train *.M, *.C, *.rep done!")
 
-
             # create pseudo-label.
             # already in *.C.
             # update pseudo-label for testdata
@@ -1313,7 +1333,7 @@ def main(args):
 
                     list_k_in_c = list(range(args.K_clusters))
                     k1, k2 = random.sample(list_k_in_c, 2)
-                    #print("{},{}".format(k1, k2))
+                    # print("{},{}".format(k1, k2))
 
                     list_mask_k1 = [0 for i in range(args.K_clusters)]
                     list_mask_k1[k1] = 1 
@@ -1330,7 +1350,7 @@ def main(args):
                                             model(x=data_x, function="outcome_logistic_regression", demov=data_v, mask_BoolTensor=mask_k1k2_tensor)
 
                     ###############################
-
+                    # print("Target, Outcome, Mask shapes: ", target.shape, output_outcome_mask_k1.shape, mask_k1_tensor.shape)
                     optimizer.zero_grad()
                     loss_classifier = criterion_CrossEntropy(output_c_no_activate, batch_c)
                     loss_AE = criterion_MSE(data_x, decoded_x)
@@ -1473,7 +1493,6 @@ def main(args):
     print("\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\n".format(args.dataset, args.K_clusters,\
         0, np.std(auc_scores), np.std(auprc_scores), 0,\
         np.std(sil_scores), np.std(htfd_scores), np.std(wdfd_scores)))
-
 
 
 if __name__ == '__main__':
