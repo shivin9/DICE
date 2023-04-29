@@ -506,8 +506,8 @@ class model_2(nn.Module):
         self.activation_classifier = nn.Softmax(dim=1)
         self.linear_regression_c = nn.Linear(self.n_clusters, self.n_classes)
         self.linear_regression_demov = nn.Linear(self.n_dummy_demov_fea, self.n_classes)
-        # self.activation_regression = nn.Sigmoid()
-        self.activation_regression = nn.Linear(self.n_classes, self.n_classes)
+        self.activation_regression = nn.Sigmoid()
+        # self.activation_regression = nn.Linear(self.n_classes, self.n_classes)
 
         expert_layers = [self.nhidden, 128, 64, 32, 16, self.n_clusters]
         n_layers = int(len(expert_layers))
@@ -524,21 +524,21 @@ class model_2(nn.Module):
             })
         self.linear_classifier_c = nn.Sequential(classifier)
 
-        expert_layers = [self.n_dummy_demov_fea + self.n_clusters, 128, 64, 32, 16, self.n_classes]
-        n_layers = int(len(expert_layers))
-        classifier1 = OrderedDict()
-        for i in range(n_layers-2):
-            classifier1.update(
-                {"layer{}".format(i): nn.Linear(expert_layers[i], expert_layers[i+1]),
-                'activation{}'.format(i): nn.ReLU(),
-                })
+        # expert_layers = [self.n_dummy_demov_fea, 128, 64, 32, 16, self.n_classes]
+        # n_layers = int(len(expert_layers))
+        # classifier1 = OrderedDict()
+        # for i in range(n_layers-2):
+        #     classifier1.update(
+        #         {"layer{}".format(i): nn.Linear(expert_layers[i], expert_layers[i+1]),
+        #         'activation{}'.format(i): nn.ReLU(),
+        #         })
 
-        i = n_layers - 2
-        classifier1.update(
-            {"layer{}".format(i): nn.Linear(expert_layers[i], expert_layers[i+1]),
-            })
-        self.final_classifier = nn.Sequential(classifier1)
-        self.init_weights()
+        # i = n_layers - 2
+        # classifier1.update(
+        #     {"layer{}".format(i): nn.Linear(expert_layers[i], expert_layers[i+1]),
+        #     })
+        # self.linear_regression_demov = nn.Sequential(classifier1)
+        # self.init_weights()
 
 
     def init_weights(self):
@@ -546,8 +546,8 @@ class model_2(nn.Module):
         self.linear_decoder_output.bias.data.fill_(0)
         self.linear_decoder_output.weight.data.uniform_(-0.1,0.1)
         
-        # self.linear_classifier_c.bias.data.fill_(0)
-        # self.linear_classifier_c.weight.data.uniform_(-0.1,0.1)
+        self.linear_classifier_c.bias.data.fill_(0)
+        self.linear_classifier_c.weight.data.uniform_(-0.1,0.1)
         
         self.linear_regression_c.bias.data.fill_(0)
         self.linear_regression_c.weight.data.uniform_(-0.1,0.1)
@@ -1478,6 +1478,7 @@ def main(args):
         tmp_wdfd = calculate_WDFD(data_train.data_x, data_train.pred_C)
 
         sil_scores.append(tmp_sil)
+        # sil_scores = [0]
         htfd_scores.append(tmp_htfd)
         wdfd_scores.append(tmp_wdfd)
 
